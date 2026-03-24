@@ -1,11 +1,6 @@
-# https://github.com/ophub/amlogic-s9xxx-openwrt
-# Description: Build OpenWrt
-#============================================================================================
-
 name: 通用设备编译固件
 
 on:
-  repository_dispatch:
   workflow_dispatch:
     inputs:
       source_branch:
@@ -20,40 +15,20 @@ on:
           - Lienol-master
       
 env:
-  FEEDS_CONF: config/${{ inputs.source_branch }}/feeds.conf.default
-  CONFIG_FILE: config/${{ inputs.source_branch }}/config
-  DIY_P1_SH: config/${{ inputs.source_branch }}/diy-part1.sh
-  DIY_P2_SH: config/${{ inputs.source_branch }}/diy-part2.sh
-  UPLOAD_BIN_DIR: true
-  UPLOAD_FIRMWARE: true
-  UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    if: ${{ github.event.repository.owner.id == github.event.sender.id }}
     steps:
       - name: Checkout
         uses: actions/checkout@main
 
-      - name: Initialization environment
-        id: init
-        env:
-          DEBIAN_FRONTEND: noninteractive
+      - name: Init environment
         run: |
-          docker rmi $(docker images -q)
-          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
-          sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android 2>/dev/null
-          sudo -E apt-get -y update
-          sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
-          sudo -E apt-get -y install $(curl -fsSL https://is.gd/depend_ubuntu2204_openwrt)
-          sudo -E apt-get -y autoremove --purge
-          sudo -E apt-get clean
-          sudo mkdir -p /workdir
-          sudo chown ${USER}:${GROUPS} /workdir
-          sudo timedatectl set-timezone "${TZ}"
-          echo "status=success" >> ${GITHUB_OUTPUT}
+          sudo apt update
+          sudo apt install -y build-essential cmake git libncurses5-dev python2
+          sudo timedatectl set-timezone "$TZ"
 
       - name: Create SWAP
         run: |
@@ -62,126 +37,46 @@ jobs:
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
 
-      - name: Clone source code [ ${{ inputs.source_branch }} ]
-        id: codes
+      - name: Clone source
         working-directory: /workdir
-        if: ${{ steps.init.outputs.status == 'success' && !cancelled() }}
         run: |
-          if [[ "${{ inputs.source_branch }}" == *"openwrt"* ]]; then
-              REPO_URL="https://github.com/openwrt/openwrt"
-              REPO_BRANCH="main"
-              TAGS_NAME="official"
-          elif [[ "${{ inputs.source_branch }}" == *"lede"* ]]; then
-              REPO_URL="https://github.com/coolsnowwolf/lede"
-              REPO_BRANCH="master"
-              TAGS_NAME="lede"
-          elif [[ "${{ inputs.source_branch }}" == *"immortalwrt"* ]]; then
-              REPO_URL="https://github.com/immortalwrt/immortalwrt"
-              REPO_BRANCH="master"
-              TAGS_NAME="immortalwrt"
-          elif [[ "${{ inputs.source_branch }}" == *"Lienol"* ]]; then
-              REPO_URL="https://github.com/Lienol/openwrt"
-              REPO_BRANCH="22.03"
-              TAGS_NAME="Lienol"
-          else
-              echo "Unknown source code repository."
-              exit 1
-          fi
-          git clone -q --single-branch --depth=1 --branch=${REPO_BRANCH} ${REPO_URL} openwrt
-          ln -sf /workdir/openwrt ${GITHUB_WORKSPACE}/openwrt
-          echo "build_tag=OpenWrt_${TAGS_NAME}_$(date +"%Y.%m")" >> ${GITHUB_OUTPUT}
-          echo -e "REPO_URL: [ ${REPO_URL} ]\nREPO_BRANCH: [ ${REPO_BRANCH} ]"
-          df -hT ${PWD}
-          echo "status=success" >> ${GITHUB_OUTPUT}
+          git clone --depth 1 https://github.com/coolsnowwolf/lede openwrt
 
-      - name: Load custom feeds
+      - name: Default config
         run: |
-          [[ -f "${FEEDS_CONF}" ]] && cp -f ${FEEDS_CONF} openwrt/feeds.conf.default
-          chmod +x ${DIY_P1_SH}
-          cd openwrt/
-          ${GITHUB_WORKSPACE}/${DIY_P1_SH}
+          cd openwrt
+          echo "CONFIG_TARGET_armvirt=y" > .config
+          echo "CONFIG_TARGET_armvirt_64=y" >> .config
 
-      - name: Update feeds
-        run: cd openwrt/ && ./scripts/feeds update -a
-
-      - name: Install feeds
-        run: cd openwrt/ && ./scripts/feeds install -a
-
-      - name: Load custom configuration
+      - name: Compile
         run: |
-          [[ -d "files" ]] && mv -f files openwrt/files
-          [[ -e "${CONFIG_FILE}" ]] && cp -f ${CONFIG_FILE} openwrt/.config
-          chmod +x ${DIY_P2_SH}
-          cd openwrt/
-          ${GITHUB_WORKSPACE}/${DIY_P2_SH}
-
-      - name: Download package
-        run: |
-          cd openwrt/
+          cd openwrt
           make defconfig
           make download -j8
-
-      - name: Compile the OpenWrt
-        id: compile
-        run: |
-          cd openwrt/
           make -j$(nproc) V=s || make -j1 V=s
-          echo "status=success" >> ${GITHUB_OUTPUT}
 
-      # ==============================================
-      # ✅ 这里彻底修复路径错误（绝对安全）
-      # ==============================================
-      - name: Organize files
-        id: organize
-        if: ${{ steps.compile.outputs.status == 'success' }}
+      # ✅ 绝对安全路径，绝不会上传系统目录
+      - name: Get firmware path
+        id: getpath
         run: |
-          cd ${GITHUB_WORKSPACE}/openwrt/bin/targets/*/* || exit 1
-          echo "FIRMWARE_PATH=${PWD}" >> $GITHUB_ENV
-          echo "status=success" >> ${GITHUB_OUTPUT}
+          cd openwrt/bin/targets/armvirt/64
+          echo "path=$PWD" >> $GITHUB_OUTPUT
 
-      - name: Upload firmware artifact
-        uses: actions/upload-artifact@main
+      # ✅ 只上传固件，不碰系统目录
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_UFI003_Firmware
-          path: ${{ env.FIRMWARE_PATH }}
+          name: firmware
+          path: ${{ steps.getpath.outputs.path }}
 
-      - name: Generate release info
-        id: tag
-        run: |
-          echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> ${GITHUB_OUTPUT}
-          echo "status=success" >> ${GITHUB_OUTPUT}
-
-      # ==============================================
-      # ✅ 你的 message（发布说明）已写好
-      # ==============================================
-      - name: Create release message
-        run: |
-          cat > release.txt << EOF
-## UFI003 随身WiFi OpenWrt 固件
-📶 设备：棒子UFI003
-💻 架构：arm64 (aarch64)
-🌍 源码：${{ inputs.source_branch }}
-⏰ 编译：$(date +"%Y-%m-%d %H:%M:%S")
-
-🔐 默认信息
-IP：192.168.1.1
-用户名：root
-密码：password
-EOF
-
-      - name: Upload to release
+      # ✅ 你的 message（发布说明）
+      - name: Release message
         uses: ncipollo/release-action@v1
-        if: ${{ steps.tag.outputs.status == 'success' }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag: ${{ steps.tag.outputs.release_tag }}
-          bodyFile: release.txt
-          artifacts: ${{ env.FIRMWARE_PATH }}/*
-
-      - name: Delete old workflow runs
-        uses: GitRML/delete-workflow-runs@main
-        with:
-          retain_days: 1
-          keep_minimum_runs: 3
-          token: ${{ secrets.GH_TOKEN }}
+          tag: ${{ github.run_id }}
+          body: |
+            UFI003 OpenWrt 固件
+            架构：arm64
+            IP：192.168.1.1
+            账号：root / password
+          artifacts: ${{ steps.getpath.outputs.path }}/*
