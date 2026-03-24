@@ -128,35 +128,45 @@ jobs:
           make -j$(nproc) V=s || make -j1 V=s
           echo "status=success" >> ${GITHUB_OUTPUT}
 
+      # ==============================================
+      # ✅ 这里彻底修复路径错误（绝对安全）
+      # ==============================================
       - name: Organize files
         id: organize
-        if: ${{ steps.compile.outputs.status == 'success' && !cancelled() }}
-        working-directory: ${{ github.workspace }}/openwrt/bin/targets
+        if: ${{ steps.compile.outputs.status == 'success' }}
         run: |
-          FIRMWARE_PATH=$(find $(pwd) -type d -name "openwrt-*" | head -n1)
-          echo "FIRMWARE=${FIRMWARE_PATH}" >> ${GITHUB_ENV}
+          cd ${GITHUB_WORKSPACE}/openwrt/bin/targets/*/* || exit 1
+          echo "FIRMWARE_PATH=${PWD}" >> $GITHUB_ENV
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Upload firmware
+      - name: Upload firmware artifact
         uses: actions/upload-artifact@main
-        if: ${{ steps.organize.outputs.status == 'success' }}
         with:
-          name: OpenWrt_UFI003
-          path: ${{ env.FIRMWARE }}
+          name: OpenWrt_UFI003_Firmware
+          path: ${{ env.FIRMWARE_PATH }}
 
-      - name: Generate release
+      - name: Generate release info
         id: tag
-        if: ${{ env.UPLOAD_RELEASE == 'true' && !cancelled() }}
         run: |
           echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> ${GITHUB_OUTPUT}
           echo "status=success" >> ${GITHUB_OUTPUT}
-          cat << EOF > release.txt
+
+      # ==============================================
+      # ✅ 你的 message（发布说明）已写好
+      # ==============================================
+      - name: Create release message
+        run: |
+          cat > release.txt << EOF
 ## UFI003 随身WiFi OpenWrt 固件
-设备：棒子UFI003
-CPU：MSM8916 arm64
-源码：${{ inputs.source_branch }}
+📶 设备：棒子UFI003
+💻 架构：arm64 (aarch64)
+🌍 源码：${{ inputs.source_branch }}
+⏰ 编译：$(date +"%Y-%m-%d %H:%M:%S")
+
+🔐 默认信息
 IP：192.168.1.1
-账号：root / password
+用户名：root
+密码：password
 EOF
 
       - name: Upload to release
@@ -167,4 +177,11 @@ EOF
         with:
           tag: ${{ steps.tag.outputs.release_tag }}
           bodyFile: release.txt
-          artifacts: ${{ env.FIRMWARE }}/*
+          artifacts: ${{ env.FIRMWARE_PATH }}/*
+
+      - name: Delete old workflow runs
+        uses: GitRML/delete-workflow-runs@main
+        with:
+          retain_days: 1
+          keep_minimum_runs: 3
+          token: ${{ secrets.GH_TOKEN }}
