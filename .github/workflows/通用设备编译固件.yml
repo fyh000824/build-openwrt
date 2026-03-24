@@ -1,82 +1,86 @@
-name: 通用设备编译固件
+name: UFI003 随身WiFi OpenWrt 编译
 
 on:
-  workflow_dispatch:
-    inputs:
-      source_branch:
-        description: "Select the source branch"
-        required: false
-        default: "openwrt-main"
-        type: choice
-        options:
-          - openwrt-main
-          - lede-master
-          - immortalwrt-master
-          - Lienol-master
-      
-env:
-  TZ: Asia/Shanghai
+  workflow_dispatch:  # 手动触发，点一下就跑
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@main
 
-      - name: Init environment
+      - name: 初始化编译环境
         run: |
           sudo apt update
-          sudo apt install -y build-essential cmake git libncurses5-dev python2
-          sudo timedatectl set-timezone "$TZ"
+          sudo apt install -y build-essential cmake git libncurses5-dev python3 python3-pip subversion zlib1g-dev
+          sudo timedatectl set-timezone Asia/Shanghai
 
-      - name: Create SWAP
+      - name: 创建交换分区（防内存不足）
         run: |
           sudo fallocate -l 2G /mnt/swapfile
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
 
-      - name: Clone source
+      - name: 克隆 LEDE 源码（适配 UFI003）
         working-directory: /workdir
         run: |
           git clone --depth 1 https://github.com/coolsnowwolf/lede openwrt
 
-      - name: Default config
+      - name: 加载 UFI003 专属配置
         run: |
           cd openwrt
-          echo "CONFIG_TARGET_armvirt=y" > .config
-          echo "CONFIG_TARGET_armvirt_64=y" >> .config
+          cat > .config << EOF
+CONFIG_TARGET_armvirt=y
+CONFIG_TARGET_armvirt_64=y
+CONFIG_TARGET_armvirt_64_DEVICE_generic=y
+CONFIG_PACKAGE_kmod-usb-net-qmi-wwan=y
+CONFIG_PACKAGE_kmod-usb-serial=y
+CONFIG_PACKAGE_kmod-usb-serial-option=y
+CONFIG_PACKAGE_kmod-usb-serial-wwan=y
+CONFIG_PACKAGE_qmi-utils=y
+CONFIG_PACKAGE_udpxy=y
+CONFIG_PACKAGE_luci-app-mwan3=y
+EOF
 
-      - name: Compile
+      - name: 更新 feeds 并安装依赖
         run: |
           cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
           make defconfig
+
+      - name: 下载编译依赖包
+        run: |
+          cd openwrt
           make download -j8
+
+      - name: 开始编译固件
+        run: |
+          cd openwrt
           make -j$(nproc) V=s || make -j1 V=s
 
-      # ✅ 绝对安全路径，绝不会上传系统目录
-      - name: Get firmware path
-        id: getpath
+      - name: 定位固件目录
+        id: get_firmware
         run: |
           cd openwrt/bin/targets/armvirt/64
-          echo "path=$PWD" >> $GITHUB_OUTPUT
+          echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
-      # ✅ 只上传固件，不碰系统目录
-      - name: Upload firmware
+      - name: 上传固件到 Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: firmware
-          path: ${{ steps.getpath.outputs.path }}
+          name: UFI003_OpenWrt_Firmware
+          path: ${{ env.FIRMWARE_PATH }}
 
-      # ✅ 你的 message（发布说明）
-      - name: Release message
+      - name: 发布到 Releases
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ github.run_id }}
+          tag: build-${{ github.run_id }}
           body: |
-            UFI003 OpenWrt 固件
-            架构：arm64
-            IP：192.168.1.1
-            账号：root / password
-          artifacts: ${{ steps.getpath.outputs.path }}/*
+            ## UFI003_MB_V02 OpenWrt 固件
+            - 设备：棒子UFI003 (MSM8916/骁龙410 arm64)
+            - 默认 IP：192.168.1.1
+            - 默认账号：root / password
+            - 已集成 4G 拨号、QMI 工具、多线多拨等功能
+          artifacts: ${{ env.FIRMWARE_PATH }}/*
