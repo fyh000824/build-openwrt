@@ -49,14 +49,13 @@ jobs:
           sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
           sudo -E apt-get -y install $(curl -fsSL https://is.gd/depend_ubuntu2204_openwrt)
           sudo -E systemctl daemon-reload
-          #sudo -E apt-get -y full-upgrade
           sudo -E apt-get -y autoremove --purge
           sudo -E apt-get clean
           sudo mkdir -p /workdir
           sudo chown ${USER}:${GROUPS} /workdir
-          sudo timedatectl set-timezone "${TZ}"
+          sudo timedate set-timezone "${TZ}"
           echo "status=success" >> ${GITHUB_OUTPUT}
-          
+
       - name: Create SWAP
         run: |
           sudo fallocate -l 2G /mnt/swapfile
@@ -69,7 +68,6 @@ jobs:
         working-directory: /workdir
         if: ${{ steps.init.outputs.status == 'success' && !cancelled() }}
         run: |
-          # Set up compilation source code
           if [[ "${{ inputs.source_branch }}" == *"openwrt"* ]]; then
               REPO_URL="https://github.com/openwrt/openwrt"
               REPO_BRANCH="main"
@@ -90,11 +88,9 @@ jobs:
               echo "Unknown source code repository."
               exit 1
           fi
-          # Clone source code
           git clone -q --single-branch --depth=1 --branch=${REPO_BRANCH} ${REPO_URL} openwrt
           ln -sf /workdir/openwrt ${GITHUB_WORKSPACE}/openwrt
-          # Set output information
-          echo "build_tag=OpenWrt_${TAGS_NAME}_${{ inputs.openwrt_storage }}_$(date +"%Y.%m")" >> ${GITHUB_OUTPUT}
+          echo "build_tag=OpenWrt_${TAGS_NAME}_$(date +"%Y.%m")" >> ${GITHUB_OUTPUT}
           echo -e "REPO_URL: [ ${REPO_URL} ]\nREPO_BRANCH: [ ${REPO_BRANCH} ]\nTAGS_NAME: [ ${TAGS_NAME} ]"
           df -hT ${PWD}
           echo "status=success" >> ${GITHUB_OUTPUT}
@@ -145,7 +141,7 @@ jobs:
         uses: actions/upload-artifact@main
         if: ${{ steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true' }}
         with:
-          name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          name: OpenWrt_bin
           path: openwrt/bin
 
       - name: Organize files
@@ -161,7 +157,7 @@ jobs:
         uses: actions/upload-artifact@main
         if: ${{ steps.organize.outputs.status == 'success' && !cancelled() }}
         with:
-          name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          name: OpenWrt_firmware
           path: ${{ env.FIRMWARE }}
 
       - name: Generate release tag
@@ -169,7 +165,15 @@ jobs:
         if: ${{ env.UPLOAD_RELEASE == 'true' && !cancelled() }}
         run: |
           echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> ${GITHUB_OUTPUT}
+          echo "status=success" >> ${GITHUB_OUTPUT}
           touch release.txt
+          cat << EOF >> release.txt
+          ## OpenWrt 通用固件自动编译
+          源码：${{ inputs.source_branch }}
+          时间：$(date +"%Y-%m-%d %H:%M:%S")
+          默认 IP：192.168.1.1
+          默认账号：root / password
+          EOF
 
       - name: Upload firmware to release
         uses: ncipollo/release-action@v1
